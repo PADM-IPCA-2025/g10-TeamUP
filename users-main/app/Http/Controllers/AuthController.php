@@ -7,7 +7,7 @@ use App\Models\User;
 use PHPOpenSourceSaver\JWTAuth\Facades\JWTAuth;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
-
+use PhpAmqpLib\Connection\AMQPSSLConnection;
 class AuthController extends Controller
 {
     // Register a new user
@@ -111,37 +111,57 @@ class AuthController extends Controller
     protected function publishToRabbitMQ($token)
     {
         try {
-            // Create a connection to RabbitMQ
-            $connection = new AMQPStreamConnection(
-                'rabbitmq', // RabbitMQ host
-                5672,       // RabbitMQ port
-                'guest',    // RabbitMQ user
-                'guest'     // RabbitMQ password
+            // Configurações de SSL/TLS
+            $ssl_options = [
+                'cafile' => base_path('Certificados/ca_certificate.pem'), // Certificado da CA
+                'verify_peer' => true,                                   // Validar o certificado do RabbitMQ
+                'verify_peer_name' => true,                              // Validar o nome do certificado
+                
+            ];
+    
+            // Criar a conexão com RabbitMQ via AMQPS
+            $connection = new AMQPSSLConnection(
+                'rabbitmq',   // RabbitMQ host
+                5671,         // RabbitMQ porta AMQPS
+                'guest',      // RabbitMQ user
+                'guest',      // RabbitMQ password
+                '/',          // Virtual host
+                $ssl_options  // Configurações de SSL
             );
+    
+            // Verificar se a conexão foi bem-sucedida
+            if (!$connection->isConnected()) {
+                logger()->error("Failed to connect to RabbitMQ server.");
+                return;
+            }
+    
             $channel = $connection->channel();
-
-            // Declare a fan-out exchange
+    
+            // Declarar uma exchange do tipo fan-out
             $exchange = 'fanout_exchange';
             $channel->exchange_declare($exchange, 'fanout', false, true, false);
-
-            // Create a new message with the raw token as payload
+    
+            // Criar uma nova mensagem com o token como payload
             $msg = new AMQPMessage($token);
-
-            // Publish the message to the exchange
+    
+            // Publicar a mensagem na exchange
             $channel->basic_publish($msg, $exchange);
-
-            // Store the token in Redis with a counter for the number of consumers
+    
+            // Armazenar o token no Redis com um contador para o número de consumidores
             $redis = app('redis');
-            $redis->setex("blacklisted:{$token}", config('jwt.ttl') * 60, 3); // 3 services
-
-            // Close the channel and connection
+            $redis->setex("blacklisted:{$token}", config('jwt.ttl') * 60, 3); // 3 serviços
+    
+            // Fechar o canal e a conexão
             $channel->close();
             $connection->close();
-
+    
             logger()->info("Published and initialized token: {$token}");
         } catch (\Exception $e) {
-            // Log the error
-            logger()->error("Failed to publish message to RabbitMQ: " . $e->getMessage());
+            // Logar o erro com mais informações
+            logger()->error("Failed to publish message to RabbitMQ: " . $e->getMessage(), [
+                'token' => $token,  // Adiciona o token para fins de debug
+                'exception' => $e
+            ]);
         }
     }
 

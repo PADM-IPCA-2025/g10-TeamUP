@@ -13,7 +13,7 @@ use PhpAmqpLib\Message\AMQPMessage;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use App\Services\WeatherService;
-
+use PhpAmqpLib\Connection\AMQPSSLConnection;
 
 class EventController extends Controller
 {
@@ -63,29 +63,42 @@ class EventController extends Controller
     private function publishToRabbitMQ($queueName, $messageBody)
     {
         try {
-            $connection = new AMQPStreamConnection('rabbitmq', 5672, 'guest', 'guest');
+            $sslOptions = [
+                'cafile'      => '/etc/rabbitmq/certs/ca_certificate.pem',
+                'verify_peer' => true,
+                'verify_peer_name' => false
+            ];
+            
+            // Liga-te à porta 5671 com SSL
+            $connection = new AMQPSSLConnection(
+                'rabbitmq', 
+                5671,        // porta SSL
+                'guest', 
+                'guest', 
+                '/',         // vhost (por omissão "/")
+                $sslOptions
+            );
+    
             $channel = $connection->channel();
-
-            // Declare the queue
+    
+            // Declarar fila
             $channel->queue_declare($queueName, false, true, false, false);
-
-            // Create the message
+    
+            // Criar a mensagem
             $msg = new AMQPMessage($messageBody, [
                 'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT
             ]);
-
-            // Publish the message to the specified queue
+    
+            // Publicar a mensagem
             $channel->basic_publish($msg, '', $queueName);
-
-           
-
+    
             $channel->close();
             $connection->close();
         } catch (\Exception $e) {
-           
+            // Log ou tratamento de erro
         }
     }
-
+    
 
 
 

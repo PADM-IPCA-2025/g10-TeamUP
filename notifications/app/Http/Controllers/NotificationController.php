@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
-
+use PhpAmqpLib\Connection\AMQPSSLConnection;
 class NotificationController extends Controller
 {
     /**
@@ -16,69 +16,69 @@ class NotificationController extends Controller
      */
     public function listenToNotifications()
     {
-        $rabbitmqHost = env('RABBITMQ_HOST', 'rabbitmq');
-        $rabbitmqPort = env('RABBITMQ_PORT', 5672);
-        $rabbitmqUser = env('RABBITMQ_USER', 'guest');
-        $rabbitmqPassword = env('RABBITMQ_PASSWORD', 'guest');
-        $queueName = env('RABBITMQ_QUEUE', 'notification');
+        $sslOptions = [
+            'cafile'           => '/etc/rabbitmq/certs/ca_certificate.pem', // Path inside container
+            'verify_peer'      => true,
+            'verify_peer_name' => false
+        ];
 
-        try {
-            // Connect to RabbitMQ
-            $connection = new AMQPStreamConnection($rabbitmqHost, $rabbitmqPort, $rabbitmqUser, $rabbitmqPassword);
-            $channel = $connection->channel();
+        $connection = new AMQPSSLConnection(
+            env('RABBITMQ_HOST', 'rabbitmq'),
+            env('RABBITMQ_PORT', 5671),  // Secure SSL port
+            env('RABBITMQ_USER', 'guest'),
+            env('RABBITMQ_PASSWORD', 'guest'),
+            '/',
+            $sslOptions
+        );
 
-            // Declare the queue
-            $channel->queue_declare($queueName, false, true, false, false);
+        $channel = $connection->channel();
+        $queueName = 'event_stream';
 
-            echo "Waiting for notifications. To exit press CTRL+C\n";
+        $channel->queue_declare($queueName, false, true, false, false);
 
-            // Callback for consuming messages
-            $callback = function ($msg) {
-                echo 'Notification received: ', $msg->body, "\n";
+        Log::info("Listening to event stream for notifications.");
 
-                $messageData = json_decode($msg->body, true);
+        $callback = function ($msg) {
+            Log::info("Event received in Notification service:", ['message' => $msg->body]);
 
-                if ($messageData && isset($messageData['event_id'], $messageData['participants'], $messageData['event_name'], $messageData['message'])) {
-                    try {
-                        $initiatorId = $messageData['user_id'] ?? null;
+            $event = json_decode($msg->body, true);
 
-                        foreach ($messageData['participants'] as $participant) {
-                            // Skip the initiator (the user who triggered the event)
-                            if ((int)$participant['user_id'] === (int)$initiatorId) {
-                                continue;
-                            }
+            if (isset($event['event_type']) && $event['event_type'] === 'MessageSent') {
+                $payload = $event['payload'];
 
-                            Notification::create([
-                                'event_id'   => $messageData['event_id'],
-                                'user_id'    => $participant['user_id'],
-                                'event_name' => $messageData['event_name'],
-                                'message'    => $messageData['message'],
-                            ]);
-                            echo "Notification saved for user_id: " . $participant['user_id'] . "\n";
+                if (isset($payload['event_id'], $payload['participants'], $payload['event_name'], $payload['message'], $payload['user_id'])) {
+                    $initiatorId = $payload['user_id'];
+
+                    foreach ($payload['participants'] as $participant) {
+                        if ((int)$participant['user_id'] === (int)$initiatorId) {
+                            continue;
                         }
-                    } catch (\Exception $e) {
-                        echo 'Error saving notification: ' . $e->getMessage() . "\n";
+
+                        Notification::create([
+                            'event_id'   => $payload['event_id'],
+                            'user_id'    => $participant['user_id'],
+                            'event_name' => $payload['event_name'],
+                            'message'    => $payload['message'],
+                        ]);
                     }
                 } else {
-                    echo 'Received invalid message format. Missing required fields.' . "\n";
+                    Log::warning("Invalid event payload: missing required fields.");
                 }
-
-                // Acknowledge message
-                $msg->ack();
-            };
-
-            // Start consuming messages
-            $channel->basic_consume($queueName, '', false, false, false, false, $callback);
-
-            while ($channel->is_consuming()) {
-                $channel->wait();
+            } else {
+                Log::warning("Event type not supported or missing; ignoring event.");
             }
 
-            $channel->close();
-            $connection->close();
-        } catch (\Exception $e) {
-            echo 'Error in listenToNotifications: ' . $e->getMessage() . "\n";
+            $msg->ack();
+        };
+
+        $channel->basic_consume($queueName, '', false, false, false, false, $callback);
+
+        while ($channel->is_consuming()) {
+            $channel->wait();
         }
+
+        $channel->close();
+        $connection->close();
     }
     /**
      * Get all notifications for the authenticated user.

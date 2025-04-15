@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\Http;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
+use PhpAmqpLib\Connection\AMQPSSLConnection;
 
 class ChatController extends Controller
 {
@@ -17,62 +18,51 @@ class ChatController extends Controller
      */
     public function listenRabbitMQ()
     {
-        $rabbitmqHost = env('RABBITMQ_HOST', 'rabbitmq');
-        $rabbitmqPort = env('RABBITMQ_PORT', 5672);
-        $rabbitmqUser = env('RABBITMQ_USER', 'guest');
-        $rabbitmqPassword = env('RABBITMQ_PASSWORD', 'guest');
-        $queueName = env('RABBITMQ_QUEUE', 'event_joined');
-
-        try {
-            // Connect to RabbitMQ
-            $connection = new AMQPStreamConnection($rabbitmqHost, $rabbitmqPort, $rabbitmqUser, $rabbitmqPassword);
-            $channel = $connection->channel();
-
-            // Declare the queue with durable=true
-            $channel->queue_declare($queueName, false, true, false, false);
-
-            // Set prefetch count to control the number of unacknowledged messages per consumer
-            $channel->basic_qos(null, 1, null);
-
-            // Define the callback for consuming messages
-            $callback = function ($msg) {
-                echo 'Message received: ', $msg->body, "\n";
-
-                // Log the received message
-                \Log::info('Message received by RabbitMQ listener:', ['message' => $msg->body]);
-
-                // Decode the message body
-                $messageData = json_decode($msg->body, true);
-
-                // Save the message to MySQL using EventUser model
-                EventUser::create([
-                    'event_id' => $messageData['event_id'],
-                    'event_name' => $messageData['event_name'],
-                    'user_id' => $messageData['user_id'],
-                    'user_name' => $messageData['user_name'],
-                    'message' => $messageData['message'],
-                ]);
-
-                // Manually acknowledge the message after processing
-                $msg->ack();
-            };
-
-            // Start consuming messages from the queue
-            $channel->basic_consume($queueName, '', false, false, false, false, $callback);
-
-            // Keep listening for incoming messages
-            while ($channel->is_consuming()) {
-                $channel->wait();
-            }
-
-            // Close channel and connection when done
-            $channel->close();
-            $connection->close();
-        } catch (\Exception $e) {
-            \Log::error('Error in listenRabbitMQ:', ['error' => $e->getMessage()]);
+        $sslOptions = [
+            'cafile'           => '/etc/rabbitmq/certs/ca_certificate.pem',
+            'verify_peer'      => true,
+            'verify_peer_name' => false
+        ];
+    
+        $connection = new AMQPSSLConnection(
+            env('RABBITMQ_HOST', 'rabbitmq'),
+            env('RABBITMQ_PORT', 5671),  // Use SSL port
+            env('RABBITMQ_USER', 'guest'),
+            env('RABBITMQ_PASSWORD', 'guest'),
+            '/',
+            $sslOptions
+        );
+    
+        $channel = $connection->channel();
+        $channel->queue_declare(env('RABBITMQ_QUEUE', 'event_joined'), false, true, false, false);
+        $channel->basic_qos(null, 1, null);
+    
+        $callback = function ($msg) {
+            echo 'Message received: ', $msg->body, "\n";
+            Log::info('Message received by RabbitMQ listener:', ['message' => $msg->body]);
+    
+            $messageData = json_decode($msg->body, true);
+    
+            EventUser::create([
+                'event_id'   => $messageData['event_id'],
+                'event_name' => $messageData['event_name'],
+                'user_id'    => $messageData['user_id'],
+                'user_name'  => $messageData['user_name'],
+                'message'    => $messageData['message'],
+            ]);
+    
+            $msg->ack();
+        };
+    
+        $channel->basic_consume(env('RABBITMQ_QUEUE', 'event_joined'), '', false, false, false, false, $callback);
+    
+        while ($channel->is_consuming()) {
+            $channel->wait();
         }
+    
+        $channel->close();
+        $connection->close();
     }
-
 /**
  * Send a message in an event chat.
  */
@@ -101,10 +91,10 @@ public function sendMessage(Request $request, $id)
             ->exists();
 
         if (!$isParticipating) {
-            \Log::warning('Unauthorized attempt to send a message to an event:', [
+          /*  \Log::warning('Unauthorized attempt to send a message to an event:', [
                 'user_id' => $userId,
                 'event_id' => $id,
-            ]);
+            ]);*/
             return response()->json(['error' => 'Unauthorized: User is not participating in this event'], 403);
         }
 
@@ -146,8 +136,8 @@ public function sendMessage(Request $request, $id)
             'errors' => $e->errors(),
         ], 422);
     } catch (\Exception $e) {
-        \Log::error('Error in sendMessage:', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
-        return response()->json(['error' => $e->getMessage()], 401);
+      /*  \Log::error('Error in sendMessage:', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+        return response()->json(['error' => $e->getMessage()], 401);*/
     }
 }
 
@@ -156,35 +146,44 @@ public function sendMessage(Request $request, $id)
  * Publish a message to RabbitMQ.
  */
 private function publishToRabbitMQ($queueName, $messageBody)
-{
-    $rabbitmqHost = env('RABBITMQ_HOST', 'rabbitmq');
-    $rabbitmqPort = env('RABBITMQ_PORT', 5672);
-    $rabbitmqUser = env('RABBITMQ_USER', 'guest');
-    $rabbitmqPassword = env('RABBITMQ_PASSWORD', 'guest');
-
-    try {
-        // Connect to RabbitMQ
-        $connection = new AMQPStreamConnection($rabbitmqHost, $rabbitmqPort, $rabbitmqUser, $rabbitmqPassword);
-        $channel = $connection->channel();
-
-        // Declare the queue to ensure it exists
-        $channel->queue_declare($queueName, false, true, false, false);
-
-        // Create the message
-        $msg = new AMQPMessage($messageBody);
-
-        // Publish the message to the specified queue
-        $channel->basic_publish($msg, '', $queueName);
-
-        // Close the channel and connection
-        $channel->close();
-        $connection->close();
-
-        \Log::info('Message published to RabbitMQ:', ['queue' => $queueName, 'message' => $messageBody]);
-    } catch (\Exception $e) {
-        \Log::error('Error publishing message to RabbitMQ:', ['error' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+    {
+        $sslOptions = [
+            'cafile'           => '/etc/rabbitmq/certs/ca_certificate.pem',
+            'verify_peer'      => true,
+            'verify_peer_name' => false
+        ];
+    
+        try {
+            $connection = new AMQPSSLConnection(
+                env('RABBITMQ_HOST', 'rabbitmq'),
+                env('RABBITMQ_PORT', 5671),  // Use SSL port
+                env('RABBITMQ_USER', 'guest'),
+                env('RABBITMQ_PASSWORD', 'guest'),
+                '/',
+                $sslOptions
+            );
+    
+            $channel = $connection->channel();
+            $channel->queue_declare($queueName, false, true, false, false);
+    
+            $msg = new AMQPMessage($messageBody);
+            $channel->basic_publish($msg, '', $queueName);
+    
+            $channel->close();
+            $connection->close();
+    
+            Log::info('Message published to RabbitMQ:', ['queue' => $queueName, 'message' => $messageBody]);
+        } catch (\Exception $e) {
+            Log::error('Error publishing message to RabbitMQ:', [
+                'error'   => $e->getMessage(),
+                'queue'   => $queueName,
+                'message' => $messageBody,
+            ]);
+    
+            $this->storeFailedMessage($queueName, $messageBody);
+        }
     }
-}
+    
 
 
 
@@ -207,10 +206,10 @@ private function publishToRabbitMQ($queueName, $messageBody)
                 ->exists();
 
             if (!$isParticipating) {
-                \Log::warning('Unauthorized attempt to fetch messages for an event:', [
+               /* \Log::warning('Unauthorized attempt to fetch messages for an event:', [
                     'user_id' => $userId,
                     'event_id' => $id,
-                ]);
+                ]);*/
                 return response()->json(['error' => 'Unauthorized: User is not participating in this event'], 403);
             }
 
@@ -219,8 +218,8 @@ private function publishToRabbitMQ($queueName, $messageBody)
 
             return response()->json(['messages' => $messages], 200);
         } catch (\Exception $e) {
-            \Log::error('Error in fetchMessages:', ['error' => $e->getMessage()]);
-            return response()->json(['error' => $e->getMessage()], 401);
+         /*   \Log::error('Error in fetchMessages:', ['error' => $e->getMessage()]);
+            return response()->json(['error' => $e->getMessage()], 401);*/
         }
     }
 
