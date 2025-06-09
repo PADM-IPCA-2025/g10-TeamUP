@@ -24,3 +24,5 @@ Como testar as funcionalidades
     Faz login na aplicação para obter o token de autenticação.
 
     Usa esse token para aceder aos restantes endpoints da API.
+
+teste
