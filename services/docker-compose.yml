@@ -1,0 +1,428 @@
+version: "3.9"
+
+############################
+# 1. users-main stack
+############################
+services:
+  users-main-db:
+    image: mysql:5.7
+    container_name: laravel-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: laravel
+    ports:
+      - "3307:3306"
+    networks:
+      - laravel
+
+  users-main-nginx:
+    image: nginx:alpine
+    container_name: laravel-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./users-main:/var/www
+      - ./users-main/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      users-main-db:
+        condition: service_started
+    networks:
+      laravel:
+      shared:
+        aliases:
+          - nginx
+
+  users-main-app:
+    build:
+      context: ./users-main
+      dockerfile: Dockerfile
+    container_name: app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./users-main:/var/www
+    env_file:
+      - ./users-main/.env
+    entrypoint: ["sh", "/var/www/entrypoint.sh"]
+    depends_on:
+      users-main-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      laravel:
+        aliases:           # <-- added
+          - app
+      shared:
+
+  users-main-redis:
+    image: redis:alpine
+    container_name: laravel-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    networks:
+      - laravel
+      - shared
+
+
+############################
+# 2. event_manager stack
+############################
+  event_manager-db:
+    image: mysql:5.7
+    container_name: laravel-db-event
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: event_manager_db
+    ports:
+      - "3308:3306"
+    networks:
+      - app-network
+
+  event_manager-webserver:
+    image: nginx:alpine
+    container_name: event_manager_webserver
+    restart: unless-stopped
+    ports:
+      - "8081:80"
+    volumes:
+      - ./event_manager:/var/www
+      - ./event_manager/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      event_manager-db:
+        condition: service_started
+    networks:
+      - app-network
+      - shared
+
+  event_manager-app:
+    build:
+      context: ./event_manager
+      dockerfile: Dockerfile
+    container_name: event_manager_app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./event_manager:/var/www
+      - ./event_manager/storage:/var/www/storage
+    env_file:
+      - ./event_manager/.env
+    depends_on:
+      event_manager-db:
+        condition: service_started
+      event_manager-redis:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      app-network:
+        aliases:           # <-- added
+          - app
+      shared:
+
+  event_manager-redis:
+    image: redis:alpine
+    container_name: redis1
+    restart: unless-stopped
+    ports:
+      - "6479:6379"
+    networks:
+      - app-network
+      - shared
+
+
+############################
+# 3. chat stack
+############################
+  chat-webserver:
+    image: nginx:alpine
+    container_name: chat_microservice_webserver
+    restart: unless-stopped
+    ports:
+      - "8082:80"
+    volumes:
+      - ./chat:/var/www
+      - laravel_storage:/var/www/storage:ro
+      - ./chat/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      chat-app:
+        condition: service_started
+    networks:
+      - test
+      - shared
+
+  chat-app:
+    build:
+      context: ./chat
+      dockerfile: Dockerfile
+    container_name: chat_microservice_app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./chat:/var/www
+      - vendor_data:/var/www/vendor
+      - laravel_storage:/var/www/storage
+      - laravel_cache:/var/www/bootstrap/cache
+    env_file:
+      - ./chat/.env
+    depends_on:
+      chat-mysql-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      test:
+        aliases:           # <-- added
+          - app
+      shared:
+
+  chat-mysql-db:
+    image: mysql:5.7
+    container_name: chat_microservice_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: chat_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3406:3306"
+    networks:
+      - test
+
+  chat-redis:
+    image: redis:alpine
+    container_name: redis2
+    restart: unless-stopped
+    ports:
+      - "6579:6379"
+    networks:
+      - test
+      - shared
+
+
+############################
+# 4. rabbit stack (unchanged)
+############################
+  rabbitmq:
+    image: rabbitmq:management
+    container_name: rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - shared
+
+
+############################
+# 5. API Gateway (unchanged)
+############################
+  api-gateway:
+    image: nginx:alpine
+    container_name: api_gateway
+    restart: unless-stopped
+    ports:
+      - "8085:80"
+    networks:
+      - shared
+    volumes:
+      - ./API_Gateway/gateway.conf:/etc/nginx/conf.d/default.conf:ro
+
+
+############################
+# 6. rating microservice
+############################
+  rating-webserver:
+    image: nginx:alpine
+    container_name: rate_microservice_webserver
+    restart: unless-stopped
+    ports:
+      - "8086:80"
+    volumes:
+      - ./rating:/var/www
+      - ./rating/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      rating-app:
+        condition: service_started
+    networks:
+      - test2
+      - shared
+
+  rating-app:
+    build:
+      context: ./rating
+      dockerfile: Dockerfile
+    container_name: rate_microservice_app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./rating:/var/www
+    env_file:
+      - ./rating/.env
+    depends_on:
+      rating-mysql-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      test2:
+        aliases:           # <-- added
+          - app
+      shared:
+
+  rating-mysql-db:
+    image: mysql:5.7
+    container_name: rate_microservice_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: chat_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3507:3306"
+    networks:
+      - test2
+
+  rating-redis:
+    image: redis:alpine
+    container_name: redis_rating
+    restart: unless-stopped
+    ports:
+      - "6678:6379"
+    networks:
+      - test2
+      - shared
+
+
+############################
+# 7. achievements microservice
+############################
+  achievements-webserver:
+    image: nginx:alpine
+    container_name: ach_microservice_webserver
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    volumes:
+      - ./achievements:/var/www
+      - ./achievements/nginx.conf:/etc/nginx/conf.d/default.conf
+    depends_on:
+      achievements-app:
+        condition: service_started
+    networks:
+      - test3
+      - shared
+
+  # ⬇️  Unchanged context above …
+
+  achievements-app:
+    build:
+      context: ./achievements
+      dockerfile: Dockerfile
+    container_name: ach_microservice_app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./achievements:/var/www
+    env_file:
+      - ./achievements/.env
+    # entrypoint removed – users-main-style permissions only run for rating-app
+    depends_on:
+      achievements-mysql-db:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      test3:
+        aliases:
+          - app
+      shared:
+
+
+  achievements-mysql-db:
+    image: mysql:5.7
+    container_name: ach_microservice_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ach_db
+      MYSQL_USER: user
+      MYSQL_PASSWORD: password
+    ports:
+      - "3606:3306"
+    networks:
+      - test3
+
+  achievements-redis:
+    image: redis:alpine
+    container_name: redis4
+    restart: unless-stopped
+    ports:
+      - "6779:6379"
+    networks:
+      - test3
+      - shared
+
+
+############################
+# 8. websocket notification service
+############################
+  ws-server:
+    build:
+      context: ./websocket/server
+      dockerfile: Dockerfile
+    container_name: ws_notification_server
+    restart: unless-stopped
+    env_file:
+      - ./websocket/server/.env
+    ports:
+      - "${WS_PORT:-55333}:8080"
+    volumes:
+      - ./websocket/server:/app:delegated
+      - ws_node_modules:/app/node_modules
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      shared:
+        aliases:
+          - app   # not strictly needed, but harmless
+
+
+############################
+# Networks & Volumes
+############################
+networks:
+  laravel:
+    driver: bridge
+  app-network:
+    driver: bridge
+  test:
+    driver: bridge
+  test2:
+    driver: bridge
+  test3:
+    driver: bridge
+  shared:
+    external: true
+
+volumes:
+  laravel_storage:
+  laravel_cache:
+  vendor_data:
+  ws_node_modules:

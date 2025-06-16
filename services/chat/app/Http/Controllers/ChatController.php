@@ -8,71 +8,31 @@ use Illuminate\Support\Facades\Cache;
 use Tymon\JWTAuth\Facades\JWTAuth;
 use PhpAmqpLib\Connection\AMQPStreamConnection;
 use PhpAmqpLib\Message\AMQPMessage;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class ChatController extends Controller
 {
+    /* ───────────────────────────── RABBITMQ PUBLISHER ───────────────────────────── */
 
-    //───────────────────────────────────────────── RABBIT ────────────────────────────────────────────────────────────────────────────────────
-
-    //Escuta uma fila do rabbit  e regista na BD 
-    public function listenRabbitMQ()
+    /**
+     * Publish a JSON-encoded message to RabbitMQ.
+     *
+     * ‼️  This controller no longer contains a queue *consumer*; that responsibility
+     *     lives in an artisan command run by Supervisor, avoiding multiple
+     *     consumers for the same queue.
+     *
+     * @param  string  $messageBody
+     * @return void
+     */
+    private function publishToRabbitMQ(string $messageBody): void
     {
-        $rabbitmqHost = env('RABBITMQ_HOST', 'rabbitmq');
-        $rabbitmqPort = env('RABBITMQ_PORT', 5672);
-        $rabbitmqUser = env('RABBITMQ_USER', 'guest');
-        $rabbitmqPassword = env('RABBITMQ_PASSWORD', 'guest');
-        $queueName = env('RABBITMQ_QUEUE', 'lolchat_event_join-leave');
-
-        try {
-            $connection = new AMQPStreamConnection(
-                $rabbitmqHost,
-                $rabbitmqPort,
-                $rabbitmqUser,
-                $rabbitmqPassword
-            );
-            $channel = $connection->channel();
-
-            $channel->queue_declare($queueName, false, true, false, false);
-            $channel->basic_qos(null, 1, null);
-
-            $callback = function ($msg) {
-                echo 'Message received: ', $msg->body, "\n";
-
-                $messageData = json_decode($msg->body, true);
-
-                EventUser::create([             //guarda na base de dados          
-                    'event_id' => $messageData['event_id'],
-                    'event_name' => $messageData['event_name'],
-                    'user_id' => $messageData['user_id'],
-                    'user_name' => $messageData['user_name'],
-                    'message' => $messageData['message'],
-                ]);
-
-                $msg->ack();
-            };
-
-            $channel->basic_consume($queueName, '', false, false, false, false, $callback);
-
-            while ($channel->is_consuming()) {
-                $channel->wait();
-            }
-
-            $channel->close();
-            $connection->close();
-        } catch (\Exception $e) {
-
-        }
-    }
-
-    // pubica no rabbit
-    private function publishToRabbitMQ(string $messageBody)
-    {
-        $rabbitmqHost = env('RABBITMQ_HOST', 'rabbitmq');
-        $rabbitmqPort = env('RABBITMQ_PORT', 5672);
-        $rabbitmqUser = env('RABBITMQ_USER', 'guest');
+        $rabbitmqHost     = env('RABBITMQ_HOST',     'rabbitmq');
+        $rabbitmqPort     = env('RABBITMQ_PORT',     5672);
+        $rabbitmqUser     = env('RABBITMQ_USER',     'guest');
         $rabbitmqPassword = env('RABBITMQ_PASSWORD', 'guest');
 
-        // Fanout exchanges + target queue
+        // Fan-out exchanges and direct queue
         $fanoutExchanges = [
             'notification_fanout_1',
             'notification_fanout_2',
@@ -88,169 +48,156 @@ class ChatController extends Controller
             );
             $channel = $connection->channel();
 
-            // Publish to fanout exchanges
+            /* Fan-out publishing */
             foreach ($fanoutExchanges as $exchange) {
-                $channel->exchange_declare(
-                    $exchange,
-                    'fanout',
-                    false,
-                    true,
-                    false
+                $channel->exchange_declare($exchange, 'fanout', false, true, false);
+
+                $channel->basic_publish(
+                    new AMQPMessage($messageBody, [
+                        'content_type' => 'application/json',
+                        'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                    ]),
+                    $exchange          // exchange
                 );
-
-                $msg = new AMQPMessage($messageBody, [
-                    'content_type' => 'application/json',
-                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-                ]);
-
-                $channel->basic_publish($msg, $exchange);
-
             }
 
-            // Ensure direct queue exists
+            /* Direct queue publishing */
             $channel->queue_declare($directQueue, false, true, false, false);
-
-            // Publish directly to the queue using default exchange ("")
-            $directMsg = new AMQPMessage($messageBody, [
-                'content_type' => 'application/json',
-                'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
-            ]);
-            $channel->basic_publish($directMsg, '', $directQueue);
-
+            $channel->basic_publish(
+                new AMQPMessage($messageBody, [
+                    'content_type' => 'application/json',
+                    'delivery_mode' => AMQPMessage::DELIVERY_MODE_PERSISTENT,
+                ]),
+                '',                 // default exchange
+                $directQueue        // routing-key (queue name)
+            );
 
             $channel->close();
             $connection->close();
-        } catch (\Exception $e) {
+        } catch (\Throwable $e) {
+            // You may want to log the error instead of swallowing it silently.
+            report($e);
         }
     }
 
-    //───────────────────────────────────────────── SEND MESSAGE────────────────────────────────────────────────────────────────────────────────────
-    public function sendMessage(Request $request, $id)
+    /* ───────────────────────────── SEND MESSAGE ───────────────────────────── */
+
+    public function sendMessage(Request $request, int $id)
     {
-        try { // valida token e extrai id e name
-            $token = $this->validateToken($request);
+        try {
+            /* Validate & decode JWT */
+            $token   = $this->validateToken($request);
             $payload = JWTAuth::setToken($token)->getPayload();
-            $userId = $payload->get('sub');
+            $userId  = $payload->get('sub');
             $userName = $payload->get('name');
 
-            // valida a mensagem
+            /* Validate message payload */
             $validatedData = $request->validate([
                 'message' => 'required|string',
             ]);
 
-            // verifica se o user é participante
+            /* Ensure the user is part of the event */
             $isParticipating = EventUser::where('event_id', $id)
                 ->where('user_id', $userId)
                 ->exists();
 
-            if (!$isParticipating) {
-
-                return response()->json(['error' => 'Unauthorized: User is not participating in this event'], 403);
+            if (! $isParticipating) {
+                return response()->json(
+                    ['error' => 'Unauthorized: User is not participating in this event'],
+                    403
+                );
             }
 
-            // guarda na BD
+            /* Persist message */
             $messageData = [
-                'event_id' => $id,
+                'event_id'   => $id,
                 'event_name' => "Evento $id",
-                'user_id' => $userId,
-                'user_name' => $userName,
-                'message' => $validatedData['message'],
+                'user_id'    => $userId,
+                'user_name'  => $userName,
+                'message'    => $validatedData['message'],
             ];
             EventUser::create($messageData);
 
-            // obtem lista de participantes
+            /* Fetch distinct participants for the payload */
             $eventParticipants = EventUser::where('event_id', $id)
                 ->distinct()
                 ->get(['user_id', 'user_name']);
 
-            // faz o payload
+            /* Construct and publish notification */
             $notificationMessage = [
-                'type' => 'new_message',
-                'event_id' => $id,
-                'event_name' => "Evento $id",
-                'user_id' => $userId,
-                'user_name' => $userName,
-                'message' => $validatedData['message'],
-                'timestamp' => now()->toISOString(),
-                'participants' => $eventParticipants->toArray(),
+                'type'        => 'new_message',
+                'event_id'    => $id,
+                'event_name'  => "Evento $id",
+                'user_id'     => $userId,
+                'user_name'   => $userName,
+                'message'     => $validatedData['message'],
+                'timestamp'   => now()->toISOString(),
+                'participants'=> $eventParticipants->toArray(),
             ];
-
-            //  publica no rabbit
             $this->publishToRabbitMQ(json_encode($notificationMessage));
 
-            return response()->json(['status' => 'Message sent successfully'], 201); // sucesso
+            return response()->json(['status' => 'Message sent successfully'], 201);
         } catch (\Illuminate\Validation\ValidationException $e) {
             return response()->json([
                 'message' => 'Validation Error',
-                'errors' => $e->errors(),
+                'errors'  => $e->errors(),
             ], 422);
-        } catch (\Exception $e) {
-
+        } catch (\Throwable $e) {
             return response()->json(['error' => $e->getMessage()], 401);
         }
     }
 
+    /* ───────────────────────────── FETCH MESSAGES ───────────────────────────── */
 
-
-
-    //───────────────────────────────────────────── FETCH MESSAGE────────────────────────────────────────────────────────────────────────────────────
-    public function fetchMessages(Request $request, $id)
+    public function fetchMessages(Request $request, int $id)
     {
         try {
-            // valida token e extrai id
-            $token = $this->validateToken($request);
+            $token   = $this->validateToken($request);
             $payload = JWTAuth::setToken($token)->getPayload();
-            $userId = $payload->get('sub');
+            $userId  = $payload->get('sub');
 
-            // verifica se o utilizador participa no evento
+            /* Verify participation */
             $isParticipating = EventUser::where('event_id', $id)
                 ->where('user_id', $userId)
                 ->exists();
 
-            if (!$isParticipating) {
-
-                return response()->json(['error' => 'Unauthorized: User is not participating in this event'], 403);
+            if (! $isParticipating) {
+                return response()->json(
+                    ['error' => 'Unauthorized: User is not participating in this event'],
+                    403
+                );
             }
 
-            // fetch a todas as mensagens gravadas na BD
+            /* Retrieve messages */
             $messages = EventUser::where('event_id', $id)->get();
 
-            return response()->json(['messages' => $messages], 200);  // sucesso retorna array de mensagens
-        } catch (\Exception $e) {
-
+            return response()->json(['messages' => $messages], 200);
+        } catch (\Throwable $e) {
             return response()->json(['error' => $e->getMessage()], 401);
         }
     }
 
-    //───────────────────────────────────────────── token ────────────────────────────────────────────────────────────────────────────────────
-    //verifica se token esta blacklisted
-    private function isTokenBlacklisted($token)
-    {
-        $cacheKey = "blacklisted:{$token}";
+    /* ───────────────────────────── JWT / TOKEN HELPERS ───────────────────────────── */
 
-        return Cache::has($cacheKey);
+    private function isTokenBlacklisted(string $token): bool
+    {
+        return Cache::has("blacklisted:{$token}");
     }
 
-    //extrai token do pedido
-    private function getTokenFromRequest(Request $request)
+    private function getTokenFromRequest(Request $request): string
     {
         $token = $request->header('Authorization');
 
-        if (!$token) {
+        if (! $token) {
             throw new \Exception('Token is required.');
         }
 
-        if (str_starts_with($token, 'Bearer ')) {
-            $token = substr($token, 7);
-        }
-
-        return $token;
+        return str_starts_with($token, 'Bearer ')
+            ? substr($token, 7)
+            : $token;
     }
 
-
-    //  valida token e verifica se esta blacklisted
-
-    private function validateToken(Request $request)
+    private function validateToken(Request $request): string
     {
         $token = $this->getTokenFromRequest($request);
 

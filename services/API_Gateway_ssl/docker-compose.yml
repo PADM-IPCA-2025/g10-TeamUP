@@ -1,0 +1,16 @@
+services:
+  api-gateway:
+    image: nginx:alpine
+    container_name: api_gateway
+    restart: unless-stopped
+    ports:
+      - "8085:80"      # HTTP 
+      - "8443:443"     # HTTPS local 
+    volumes:
+      - ./gateway.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro        #  monta chaves dentro do contêiner
+    networks:
+      - shared
+networks:
+  shared:
+    external: true
