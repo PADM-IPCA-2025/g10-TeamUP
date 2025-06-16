@@ -67,7 +67,7 @@ const ChatList: React.FC = () => {
         {/* ─────────────────── ACTIVE ─────────────────── */}
         <div className="column">
           <h3>Active Activities</h3>
-          {totalA === 0 && <p>Nenhum chat activo.</p>}
+          {totalA === 0 && <p>No active chats.</p>}
           {sliceA.map((ev) => (
             <div
               key={ev.id}
@@ -100,7 +100,7 @@ const ChatList: React.FC = () => {
         {/* ────────────────── ARCHIVED ────────────────── */}
         <div className="column">
           <h3>Concluded Activities</h3>
-          {totalC === 0 && <p>Nenhum chat arquivado.</p>}
+          {totalC === 0 && <p>No archived chats.</p>}
           {sliceC.map((ev) => (
             <div
               key={ev.id}

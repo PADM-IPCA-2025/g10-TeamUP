@@ -228,7 +228,7 @@ const Topbar: React.FC<TopbarProps> = ({    // componente que recebe do layout
                 navigate("/account");
               }}
             >
-              Perfil
+              Profile
             </button>
             <button className="danger" onClick={handleLogout}>
               Logout

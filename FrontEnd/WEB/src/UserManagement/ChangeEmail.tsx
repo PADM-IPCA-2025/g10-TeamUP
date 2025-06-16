@@ -41,7 +41,7 @@ export default function ChangeEmailPage() {
 
         <form onSubmit={onSubmit}>
           <label>
-            Novo e-mail
+            New e-mail
             <input
               type="email"
               value={email}

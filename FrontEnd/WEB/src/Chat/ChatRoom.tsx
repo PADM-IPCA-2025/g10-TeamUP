@@ -97,13 +97,13 @@ const ChatRoom: React.FC = () => {
         if (res.status === 401) throw new Error("Não autorizado.");
         return res.json();     
       })
-      .then((data: EventDTO[]) => {
-        // procura o evento
-        const ev = data.find((e) => e.id === eventId);
-        if (ev) {    // define o nome e os participantes do evento
+      .then((resData) => {
+        const events: EventDTO[] = resData.data;
+        const ev = events.find((e) => e.id === eventId);
+        if (ev) {
           setEventName(ev.name);
           setParticipants(ev.participants);
-        } else {  // nao encontrou evento
+        } else {
           setEventName(`Evento ${eventId}`);
           setParticipants([]);
         }
