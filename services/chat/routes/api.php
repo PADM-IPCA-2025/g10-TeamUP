@@ -20,3 +20,5 @@ Route::post('/sendMessage/{id}', [ChatController::class, 'sendMessage']);
 
 // Route to fetch all messages for a specific event
 Route::get('/fetchMessages/{id}', [ChatController::class, 'fetchMessages']);
+
+Route::post('/store-fcm-token',   [ChatController::class, 'storeFcmToken']);

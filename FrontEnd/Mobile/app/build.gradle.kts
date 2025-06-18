@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    id("com.google.gms.google-services")
 }
 
 android {
@@ -24,7 +25,7 @@ android {
         buildConfigField(
             "String",
             "BASE_URL_DEVICE",
-            "\"http://192.168.1.73:8085/\""
+            "\"http://10.0.2.2:8085/\""
         )
     }
 
@@ -54,6 +55,11 @@ android {
 }
 
 dependencies {
+    // Import the Firebase BoM
+    implementation(platform("com.google.firebase:firebase-bom:33.15.0"))
+
+    implementation ("com.google.firebase:firebase-messaging-ktx")
+
     // Compose BOM
     implementation(platform(libs.androidx.compose.bom))
 
@@ -73,6 +79,7 @@ dependencies {
     // Navigation & Maps
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("com.google.maps.android:maps-compose:4.3.3")
+    implementation ("com.google.accompanist:accompanist-permissions:0.37.3")
     implementation("com.google.android.gms:play-services-maps:18.2.0")
     implementation("com.google.android.gms:play-services-location:21.2.0")
     implementation("com.google.android.libraries.places:places:3.3.0")
@@ -91,6 +98,7 @@ dependencies {
     implementation("androidx.hilt:hilt-navigation-compose:1.1.0")
 
     implementation ("io.jsonwebtoken:jjwt-api:0.11.5")
+    implementation(libs.firebase.messaging.ktx)
 
     // Testing
     testImplementation(libs.junit)

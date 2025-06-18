@@ -163,9 +163,10 @@ services:
     restart: unless-stopped
     working_dir: /var/www
     volumes:
-      - ./chat:/var/www
+      - ./chat:/var/www                    # whole project
       - vendor_data:/var/www/vendor
-      - laravel_storage:/var/www/storage
+      # ⬇️ swap the named volume for a real folder bind-mount
+      - ./chat/storage:/var/www/storage
       - laravel_cache:/var/www/bootstrap/cache
     env_file:
       - ./chat/.env
@@ -241,7 +242,6 @@ services:
       - shared
     volumes:
       - ./API_Gateway/gateway.conf:/etc/nginx/conf.d/default.conf:ro
-
 
 ############################
 # 6. rating microservice

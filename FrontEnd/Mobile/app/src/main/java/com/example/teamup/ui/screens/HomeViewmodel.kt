@@ -1,14 +1,26 @@
 package com.example.teamup.ui.screens
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.content.Context
 import android.location.Geocoder
+import android.os.Looper
+import com.google.android.gms.location.LocationRequest
 import android.util.Base64
+import androidx.annotation.RequiresPermission
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.teamup.data.domain.model.ActivityItem
 import com.example.teamup.data.domain.repository.ActivityRepository
 import com.example.teamup.data.remote.api.AuthApi
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.model.LatLng
+import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.tasks.CancellationTokenSource
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import org.json.JSONObject
@@ -19,6 +31,12 @@ import kotlin.math.*
 class HomeViewModel(
     private val repo: ActivityRepository
 ) : ViewModel() {
+
+    /* ▼ NEW: last visible map area */
+    private val _mapBounds = MutableStateFlow<LatLngBounds?>(null)
+    fun updateMapBounds(bounds: LatLngBounds) {          // call from the map
+        _mapBounds.value = bounds
+    }
 
     /* ────── raw data from server ────── */
     private val _allActivities = MutableStateFlow<List<ActivityItem>>(emptyList())
@@ -44,21 +62,26 @@ class HomeViewModel(
     val hasMore: StateFlow<Boolean>                   = _hasMoreLocal
     val activities: StateFlow<List<ActivityItem>>     = _filteredActivities   // para o mapa
 
+
     init {
-        // Quando muda a lista original ou o centro → refiltra e reinicia paginação local
+        // Whenever server list, map centre **or bounds** change → rebuild paging
         viewModelScope.launch {
-            combine(_allActivities, _center) { list, c ->
+            combine(_allActivities, _center, _mapBounds) { list, _, bounds ->
                 list.filter { item ->
-                    !item.status.equals("concluded", ignoreCase = true)
+                    // ① hide concluded, ② keep only items inside the map
+                    !item.status.equals("concluded", true) &&
+                            (bounds == null ||                       // first launch
+                                    bounds.contains(LatLng(item.latitude, item.longitude)))
                 }
             }.collect { filtered ->
-                _filteredActivities.value = filtered
-                currentPageLocal.value = 1
+                _filteredActivities.value = filtered       // list for the map pins
+                currentPageLocal.value = 1                 // restart local paging
                 _visibleActivities.value = filtered.take(pageSize)
                 _hasMoreLocal.value = filtered.size > pageSize
             }
         }
     }
+
 
     /** Busca **todas** as páginas do backend, acumulando resultados */
     fun loadActivities(rawToken: String) = viewModelScope.launch {
@@ -73,12 +96,12 @@ class HomeViewModel(
                 allItems += pageItems
                 page++
             } while (repo.hasMore)
-                // anota “isCreator” e dispara para a UI
-                _allActivities.value = allItems.map { it.copy(isCreator = (it.creatorId == userId)) }
+            // anota “isCreator” e dispara para a UI
+            _allActivities.value = allItems.map { it.copy(isCreator = (it.creatorId == userId)) }
             _error.value         = null
         } catch (e: Exception) {
             _error.value = e.localizedMessage
-            }
+        }
     }
 
     /** Fallback para encontrar centro do mapa */
@@ -125,13 +148,56 @@ class HomeViewModel(
             ?.firstOrNull()?.let { LatLng(it.latitude, it.longitude) }
     } catch (_: IOException) { null }
 
-    private fun distanceMetres(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
-        val R = 6_371_000.0
-        val φ1 = Math.toRadians(lat1)
-        val φ2 = Math.toRadians(lat2)
-        val Δφ = Math.toRadians(lat2 - lat1)
-        val Δλ = Math.toRadians(lon2 - lon1)
-        val a = sin(Δφ / 2).pow(2) + cos(φ1) * cos(φ2) * sin(Δλ / 2).pow(2)
-        return 2 * R * atan2(sqrt(a), sqrt(1 - a))
+
+
+    /* Force-set centre even if numerically the same */
+    /* Force-emit even if coordinates are identical */
+    private fun pushCenterAlways(lat: Double, lon: Double) {
+        val newCenter = LatLng(lat, lon)
+
+        // If nothing changed, inject a tiny “jitter” first
+        if (newCenter == _center.value) {
+            _center.value = LatLng(lat, lon + 0.005)      // ≈ 500 m east
+        }
+
+        _center.value = newCenter                          // then real point
     }
+    @SuppressLint("MissingPermission")
+    fun fetchAndCenterOnGps(ctx: Context) {
+        val fused = LocationServices.getFusedLocationProviderClient(ctx)
+
+        val tokenSrc = CancellationTokenSource()
+        fused.getCurrentLocation(
+            Priority.PRIORITY_HIGH_ACCURACY,           // ← was BALANCED
+            tokenSrc.token
+        ).addOnSuccessListener { loc ->
+            loc?.let { pushCenterAlways(it.latitude, it.longitude) }
+                ?: requestSingleUpdate(fused)          // fall-back
+        }.addOnFailureListener { e ->
+            _error.value = "Could not get location: ${e.localizedMessage}"
+        }
+    }
+
+
+    /* one accurate fix, then stop */
+    @RequiresPermission(allOf = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION])
+    private fun requestSingleUpdate(fused: FusedLocationProviderClient) {
+        val req = LocationRequest.Builder(
+            Priority.PRIORITY_HIGH_ACCURACY,
+            2_000L                                     // 2 s – must be > 0
+        )
+            .setMaxUpdates(1)
+            .build()
+
+        fused.requestLocationUpdates(req, object : LocationCallback() {
+            override fun onLocationResult(res: LocationResult) {
+                res.lastLocation?.let {
+                    pushCenterAlways(it.latitude, it.longitude)
+                }
+                fused.removeLocationUpdates(this)
+            }
+        }, Looper.getMainLooper())
+    }
+
+
 }

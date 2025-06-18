@@ -19,6 +19,7 @@ import kotlinx.coroutines.launch
 import com.example.teamup.model.Message
 import com.example.teamup.network.ChatApi
 import com.example.teamup.network.ChatWebSocket
+import com.example.teamup.util.ActiveChat
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,6 +30,12 @@ fun ChatDetailScreen(
     myUserId:  Int,
     onBack:    () -> Unit
 ) {
+
+    DisposableEffect(Unit) {
+        ActiveChat.currentEventId = eventId          // ← NEW
+        onDispose { ActiveChat.currentEventId = null }  // ← NEW
+    }
+
     /* ── State ──────────────────────────────────────────────────────────── */
     val messages       = remember { mutableStateListOf<Message>() }
     var input          by remember { mutableStateOf("") }
