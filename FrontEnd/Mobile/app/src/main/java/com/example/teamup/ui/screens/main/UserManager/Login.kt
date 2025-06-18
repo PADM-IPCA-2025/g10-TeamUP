@@ -1,6 +1,7 @@
 // src/main/java/com/example/teamup/ui/screens/main/UserManager/LoginScreen.kt
 package com.example.teamup.ui.screens.main.UserManager
 
+import android.widget.Toast                                   // ← NEW
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -17,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext                // ← NEW
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -27,15 +29,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.teamup.R
-import com.example.teamup.ui.screens.main.UserManager.LoginState
-import com.example.teamup.ui.screens.main.UserManager.LoginViewModel
 
-/**
- * @param loginViewModel       The ViewModel that drives the login logic
- * @param onForgotPasswordClick Called when the user taps “Forgot Password?”
- * @param onRegisterClick      Called when the user taps “Register now!”
- * @param onLoginSuccess       Called when login succeeds (returning a token)
- */
 @Composable
 fun LoginScreen(
     loginViewModel: LoginViewModel,
@@ -48,12 +42,21 @@ fun LoginScreen(
     var passwordVisible by remember { mutableStateOf(false) }
 
     val loginState by loginViewModel.loginState.collectAsState()
+    val context = LocalContext.current                          // ← NEW
 
-    val primaryBlue = Color(0xFF0052CC)
-    val backgroundColor = Color(0xFFF4F3F3)
+    /* ───────────── Toast collector ───────────── */
+    LaunchedEffect(Unit) {
+        loginViewModel.toast.collect { msg ->
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+    /* ─────────────────────────────────────────── */
+
+    val primaryBlue      = Color(0xFF0052CC)
+    val backgroundColor  = Color(0xFFF4F3F3)
     val loginButtonColor = Color(0xFF023499)
     val fieldBorderColor = Color(0xFF575DFB)
-    val fieldHintColor = Color(0xFFB2B1B1)
+    val fieldHintColor   = Color(0xFFB2B1B1)
 
     Surface(
         modifier = Modifier.fillMaxSize(),
@@ -65,11 +68,9 @@ fun LoginScreen(
                 .verticalScroll(rememberScrollState())
                 .imePadding()
                 .padding(horizontal = 24.dp),
-
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Logo
             Image(
                 painter = painterResource(R.drawable.noback),
                 contentDescription = "Logo",
@@ -78,12 +79,12 @@ fun LoginScreen(
                     .padding(bottom = 32.dp)
             )
 
-            // Email field
+            /* Email field */
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 8.dp)
-                    .shadow(4.dp, shape = RoundedCornerShape(8.dp))
+                    .shadow(4.dp, RoundedCornerShape(8.dp))
             ) {
                 OutlinedTextField(
                     value = email,
@@ -102,12 +103,12 @@ fun LoginScreen(
                 )
             }
 
-            // Password field
+            /* Password field */
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(vertical = 8.dp)
-                    .shadow(4.dp, shape = RoundedCornerShape(8.dp))
+                    .shadow(4.dp, RoundedCornerShape(8.dp))
             ) {
                 OutlinedTextField(
                     value = password,
@@ -130,10 +131,9 @@ fun LoginScreen(
                         IconButton(onClick = { passwordVisible = !passwordVisible }) {
                             Icon(
                                 imageVector = if (passwordVisible)
-                                    Icons.Filled.VisibilityOff
-                                else
-                                    Icons.Filled.Visibility,
-                                contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                                    Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (passwordVisible)
+                                    "Hide password" else "Show password",
                                 tint = Color(0xFF575DFB).copy(alpha = 0.6f)
                             )
                         }
@@ -141,7 +141,7 @@ fun LoginScreen(
                 )
             }
 
-            // Forgot password
+            /* Forgot password */
             Text(
                 text = "Forgot Password?",
                 fontSize = 14.sp,
@@ -152,11 +152,9 @@ fun LoginScreen(
                     .padding(top = 4.dp, bottom = 24.dp)
             )
 
-            // Login button
+            /* Login button */
             Button(
-                onClick = {
-                    loginViewModel.login(email, password)
-                },
+                onClick = { loginViewModel.login(email, password) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(48.dp),
@@ -178,7 +176,7 @@ fun LoginScreen(
                 }
             }
 
-            // Error message
+            /* Error message */
             if (loginState is LoginState.Error) {
                 Text(
                     text = (loginState as LoginState.Error).message,
@@ -190,20 +188,18 @@ fun LoginScreen(
 
             Spacer(Modifier.height(16.dp))
 
-            // Register link
+            /* Register link */
             Text(
                 buildAnnotatedString {
                     append("Don't have an account? ")
-                    withStyle(SpanStyle(color = primaryBlue)) {
-                        append("Register now!")
-                    }
+                    withStyle(SpanStyle(color = primaryBlue)) { append("Register now!") }
                 },
                 fontSize = 14.sp,
                 modifier = Modifier.clickable(onClick = onRegisterClick)
             )
         }
 
-        // Navigate on success
+        /* Navigate away on success */
         if (loginState is LoginState.Success) {
             LaunchedEffect(Unit) {
                 onLoginSuccess((loginState as LoginState.Success).token)
