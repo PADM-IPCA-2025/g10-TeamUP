@@ -28,8 +28,8 @@
    docker compose exec achievements-app     php artisan migrate --seed
    ```
 
-## 🌐 Web Frontend
-
+## 🌐 Web Frontend 
+> **Note:** The SSL-enabled Web version is on the **`WEB`** branch.
 1. Go to the **FrontEnd/WEB** folder:
    ```bash
    cd FrontEnd/WEB
