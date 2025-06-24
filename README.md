@@ -2,7 +2,7 @@
 
 **TeamUP** is a app built as part of a Master’s project in Software Engineering.
 
-- **Backend:** Laravel microservices 
+- **Backend:** Laravel-PHP microservices containerized with docker and communicating via RabbitMQ + WebSocket Server
 - **Web frontend:** React  
 - **Mobile app:** Android (Kotlin + Jetpack Compose)  
 - **Deployment:** Docker Compose
